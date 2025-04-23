@@ -5,6 +5,7 @@ import javafx.scene.canvas.GraphicsContext;
 import javafx.scene.control.Button;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.StackPane;
 import javafx.scene.paint.Color;
 import javafx.stage.Stage;
 import javafx.animation.Animation;
@@ -20,6 +21,7 @@ public class TrafficSimulationApp extends Application {
     private Canvas canvas;
     private Timeline timeline;
     private boolean isSimulationRunning = false;
+    private Car car;
 
     @Override
     public void start(Stage primaryStage) {
@@ -30,6 +32,9 @@ public class TrafficSimulationApp extends Application {
         // Create the canvas
         canvas = new Canvas(environment.getWidth() * CELL_SIZE, environment.getHeight() * CELL_SIZE);
         draw();
+        
+        // Create the car, placed at cell (1,1)
+        car = new Car(environment, 1, 1, CELL_SIZE);
         
         // Create control buttons
         Button startStopButton = new Button("Start Simulation");
@@ -47,7 +52,7 @@ public class TrafficSimulationApp extends Application {
                 if (environment.isValidPosition(x, y) && !environment.isWall(x, y)) {
                     environment.addTrafficLight(x, y, TrafficLightState.RED);
                     draw();
-                    canvas.setOnMouseClicked(null); // Remove the click handler after placement
+                    canvas.setOnMouseClicked(null);
                 }
             });
         });
@@ -65,21 +70,26 @@ public class TrafficSimulationApp extends Application {
             });
         });
 
-        // Create the layout
+        // Layout: stack canvas and car pane
+        StackPane centerPane = new StackPane(canvas, car);
+        
         HBox controlsBox = new HBox(10, startStopButton, resetButton, addTrafficLightButton, addTrafficSignButton);
         controlsBox.setPadding(new javafx.geometry.Insets(10));
         
         BorderPane root = new BorderPane();
-        root.setCenter(canvas);
+        root.setCenter(centerPane);
         root.setBottom(controlsBox);
         
-        // Create the scene
+        // Scene setup
         Scene scene = new Scene(root);
         primaryStage.setTitle("Traffic Simulation");
         primaryStage.setScene(scene);
         primaryStage.show();
         
-        // Create the timeline for animation
+        // Bind car controls
+        car.initKeyControls(scene);
+        
+        // Animation timeline
         timeline = new Timeline(new KeyFrame(Duration.seconds(1), e -> updateSimulation()));
         timeline.setCycleCount(Animation.INDEFINITE);
     }
@@ -104,10 +114,11 @@ public class TrafficSimulationApp extends Application {
         environment = new Environment(30, 20);
         environment.createSimpleRoadNetwork();
         draw();
+        car = new Car(environment, 1, 1, CELL_SIZE);
     }
     
     private void updateSimulation() {
-        // Cycle all traffic lights
+        // Cycle traffic lights
         for (int y = 0; y < environment.getHeight(); y++) {
             for (int x = 0; x < environment.getWidth(); x++) {
                 Cell cell = environment.getCell(x, y);
@@ -120,8 +131,6 @@ public class TrafficSimulationApp extends Application {
                 }
             }
         }
-        
-        // Redraw the canvas
         draw();
     }
     
@@ -136,27 +145,18 @@ public class TrafficSimulationApp extends Application {
         for (int y = 0; y < environment.getHeight(); y++) {
             for (int x = 0; x < environment.getWidth(); x++) {
                 Cell cell = environment.getCell(x, y);
-                if (cell != null) {
-                    int cellX = x * CELL_SIZE;
-                    int cellY = y * CELL_SIZE;
-                    
-                    // Draw cell background
-                    if (cell.getType() == CellType.ROAD) {
-                        gc.setFill(Color.DARKGRAY);
+                int cellX = x * CELL_SIZE;
+                int cellY = y * CELL_SIZE;
+                
+                gc.setFill(cell.getType() == CellType.ROAD ? Color.DARKGRAY : Color.BROWN);
+                gc.fillRect(cellX, cellY, CELL_SIZE, CELL_SIZE);
+
+                if (cell.hasTrafficElements()) {
+                    TrafficElement element = cell.getTrafficElements().get(0);
+                    if (element instanceof TrafficLight) {
+                        drawTrafficLight(gc, cellX, cellY, (TrafficLight)element);
                     } else {
-                        gc.setFill(Color.BROWN);
-                    }
-                    gc.fillRect(cellX, cellY, CELL_SIZE, CELL_SIZE);
-                    
-                    // Draw traffic elements
-                    if (cell.hasTrafficElements()) {
-                        TrafficElement element = cell.getTrafficElements().get(0);
-                        
-                        if (element instanceof TrafficLight) {
-                            drawTrafficLight(gc, cellX, cellY, (TrafficLight) element);
-                        } else if (element instanceof TrafficSign) {
-                            drawTrafficSign(gc, cellX, cellY, (TrafficSign) element);
-                        }
+                        drawTrafficSign(gc, cellX, cellY, (TrafficSign)element);
                     }
                 }
             }
@@ -164,92 +164,71 @@ public class TrafficSimulationApp extends Application {
     }
     
     private void drawTrafficLight(GraphicsContext gc, int x, int y, TrafficLight light) {
-        // Draw traffic light housing
         gc.setFill(Color.DARKGREY);
-        gc.fillRect(x + PADDING, y + PADDING, CELL_SIZE - 2 * PADDING, CELL_SIZE - 2 * PADDING);
-        
-        // Draw the active light
+        gc.fillRect(x + PADDING, y + PADDING, CELL_SIZE - 2*PADDING, CELL_SIZE - 2*PADDING);
         switch (light.getState()) {
-            case RED:
-                gc.setFill(Color.RED);
-                break;
-            case YELLOW:
-                gc.setFill(Color.YELLOW);
-                break;
-            case GREEN:
-                gc.setFill(Color.LIME);
-                break;
+            case RED    -> gc.setFill(Color.RED);
+            case YELLOW -> gc.setFill(Color.YELLOW);
+            case GREEN  -> gc.setFill(Color.LIME);
         }
         gc.fillOval(x + CELL_SIZE/4, y + CELL_SIZE/4, CELL_SIZE/2, CELL_SIZE/2);
     }
     
     private void drawTrafficSign(GraphicsContext gc, int x, int y, TrafficSign sign) {
         switch (sign.getType()) {
-            case STOP:
-                // Red octagon
+            case STOP -> {
                 gc.setFill(Color.RED);
-                double[] xPoints = new double[8];
-                double[] yPoints = new double[8];
-                double radius = CELL_SIZE / 2 - PADDING;
-                double centerX = x + CELL_SIZE / 2;
-                double centerY = y + CELL_SIZE / 2;
-                
+                double[] xp = new double[8];
+                double[] yp = new double[8];
+                double r = CELL_SIZE/2 - PADDING;
+                double cx = x + CELL_SIZE/2;
+                double cy = y + CELL_SIZE/2;
                 for (int i = 0; i < 8; i++) {
-                    double angle = Math.PI / 8 + i * Math.PI / 4;
-                    xPoints[i] = centerX + radius * Math.cos(angle);
-                    yPoints[i] = centerY + radius * Math.sin(angle);
+                    double angle = Math.PI/8 + i * Math.PI/4;
+                    xp[i] = cx + r * Math.cos(angle);
+                    yp[i] = cy + r * Math.sin(angle);
                 }
-                  
-                gc.fillPolygon(xPoints, yPoints, 8);
-                
-                // White border text
+                gc.fillPolygon(xp, yp, 8);
                 gc.setFill(Color.WHITE);
                 gc.fillText("STOP", x + PADDING + 2, y + CELL_SIZE/2 + 4);
-                break;
-                
-            case YIELD:
-                // Triangle
+            }
+            case YIELD -> {
                 gc.setFill(Color.YELLOW);
                 gc.fillPolygon(
-                    new double[] {x + CELL_SIZE/2, x + PADDING, x + CELL_SIZE - PADDING},
-                    new double[] {y + PADDING, y + CELL_SIZE - PADDING, y + CELL_SIZE - PADDING},
+                    new double[]{x+CELL_SIZE/2, x+PADDING, x+CELL_SIZE-PADDING},
+                    new double[]{y+PADDING, y+CELL_SIZE-PADDING, y+CELL_SIZE-PADDING},
                     3
                 );
-                break;
-                
-            case SPEED_LIMIT:
+            }
+            case SPEED_LIMIT -> {
                 gc.setFill(Color.WHITE);
-                gc.fillOval(x + PADDING, y + PADDING, CELL_SIZE - 2 * PADDING, CELL_SIZE - 2 * PADDING);
+                gc.fillOval(x+PADDING, y+PADDING, CELL_SIZE-2*PADDING, CELL_SIZE-2*PADDING);
                 gc.setStroke(Color.RED);
                 gc.setLineWidth(2);
-                gc.strokeOval(x + PADDING, y + PADDING, CELL_SIZE - 2 * PADDING, CELL_SIZE - 2 * PADDING);
+                gc.strokeOval(x+PADDING, y+PADDING, CELL_SIZE-2*PADDING, CELL_SIZE-2*PADDING);
                 gc.setFill(Color.BLACK);
-                gc.fillText("30", x + CELL_SIZE/3, y + CELL_SIZE/2 + 4);
-                break;
-                
-            case ONE_WAY:
+                gc.fillText("30", x+CELL_SIZE/3, y+CELL_SIZE/2+4);
+            }
+            case ONE_WAY -> {
                 gc.setFill(Color.BLUE);
-                gc.fillRect(x + PADDING, y + PADDING, CELL_SIZE - 2 * PADDING, CELL_SIZE - 2 * PADDING);
-                
-                // Arrow
+                gc.fillRect(x+PADDING, y+PADDING, CELL_SIZE-2*PADDING, CELL_SIZE-2*PADDING);
                 gc.setFill(Color.WHITE);
                 gc.fillPolygon(
-                    new double[] {x + CELL_SIZE/2, x + CELL_SIZE/4, x + 3*CELL_SIZE/4},
-                    new double[] {y + PADDING + 2, y + CELL_SIZE - PADDING - 2, y + CELL_SIZE - PADDING - 2},
+                    new double[]{x+CELL_SIZE/2, x+CELL_SIZE/4, x+3*CELL_SIZE/4},
+                    new double[]{y+PADDING+2, y+CELL_SIZE-PADDING-2, y+CELL_SIZE-PADDING-2},
                     3
                 );
-                gc.fillRect(x + CELL_SIZE/2 - 2, y + CELL_SIZE/3, 4, CELL_SIZE/3);
-                break;
-                
-            case NO_ENTRY:
+                gc.fillRect(x+CELL_SIZE/2-2, y+CELL_SIZE/3, 4, CELL_SIZE/3);
+            }
+            case NO_ENTRY -> {
                 gc.setFill(Color.WHITE);
-                gc.fillOval(x + PADDING, y + PADDING, CELL_SIZE - 2 * PADDING, CELL_SIZE - 2 * PADDING);
+                gc.fillOval(x+PADDING, y+PADDING, CELL_SIZE-2*PADDING, CELL_SIZE-2*PADDING);
                 gc.setFill(Color.RED);
-                gc.fillRect(x + PADDING + 2, y + CELL_SIZE/2 - 3, CELL_SIZE - 2 * PADDING - 4, 6);
+                gc.fillRect(x+PADDING+2, y+CELL_SIZE/2-3, CELL_SIZE-2*PADDING-4, 6);
                 gc.setStroke(Color.RED);
                 gc.setLineWidth(2);
-                gc.strokeOval(x + PADDING, y + PADDING, CELL_SIZE - 2 * PADDING, CELL_SIZE - 2 * PADDING);
-                break;
+                gc.strokeOval(x+PADDING, y+PADDING, CELL_SIZE-2*PADDING, CELL_SIZE-2*PADDING);
+            }
         }
     }
     
